@@ -80,7 +80,7 @@ file_manager = FileManager(
 # Classe de compatibilité (pour migration progressive)
 class SageX3Processor:
     """
-    Classe de compatibilité - utilise maintenant les services avec priorisation LOTECART
+    Classe principale - utilise le traitement avec priorisation STRICTE LOTECART
     """
 
     def __init__(self):
@@ -88,9 +88,11 @@ class SageX3Processor:
         self.file_processor = file_processor
         self.priority_processor = PriorityProcessor()
 
-    def process_completed_file(self, session_id: str, completed_file_path: str):
-        """Traite le fichier Excel complété avec priorisation LOTECART"""
+    def process_completed_file(self, session_id: str, completed_file_path: str, strategy: str = "FIFO"):
+        """Traite le fichier Excel complété avec priorisation STRICTE LOTECART"""
         try:
+            logger.info(f"🚀 DÉBUT TRAITEMENT FICHIER COMPLÉTÉ AVEC PRIORITÉ STRICTE LOTECART - Session: {session_id}")
+            
             # Lire le fichier Excel complété
             completed_df = pd.read_excel(completed_file_path)
 
@@ -132,9 +134,9 @@ class SageX3Processor:
             if original_df is None:
                 raise ValueError("Données originales non trouvées pour la session")
             
-            # NOUVEAU: Traitement avec priorisation LOTECART
-            processing_result = self.priority_processor.process_with_priority(
-                completed_df, original_df, strategy="FIFO"
+            # NOUVEAU: Traitement avec priorisation STRICTE LOTECART
+            processing_result = self.priority_processor.process_with_strict_priority(
+                completed_df, original_df, strategy
             )
             
             # Extraire les résultats
@@ -152,7 +154,7 @@ class SageX3Processor:
             # Sauvegarder les résultats dans les services
             self.session_service.save_dataframe(session_id, "completed_df", completed_df)
             
-            # Sauvegarder les résultats du traitement prioritaire
+            # Sauvegarder les résultats du traitement prioritaire strict
             self.session_service.save_dataframe(
                 session_id, "lotecart_candidates", 
                 processing_result["lotecart_candidates"]
@@ -168,18 +170,20 @@ class SageX3Processor:
                 session_id,
                 total_discrepancy=total_discrepancy,
                 adjusted_items_count=adjusted_items_count,
+                strategy_used=strategy,
+                status="processing_completed"
             )
 
             logger.info(
-                f"Fichier complété traité avec priorité LOTECART pour session {session_id}: "
+                f"✅ Fichier complété traité avec priorité STRICTE LOTECART pour session {session_id}: "
                 f"{adjusted_items_count} ajustements totaux "
-                f"({lotecart_summary.get('adjustments_created', 0)} LOTECART prioritaires)"
+                f"({lotecart_summary.get('adjustments_created', 0)} LOTECART prioritaires validés)"
             )
             
             return processing_result
 
         except Exception as e:
-            logger.error(f"Erreur traitement fichier complété: {e}")
+            logger.error(f"❌ Erreur traitement fichier complété avec priorité stricte: {e}", exc_info=True)
             raise
 
     def distribute_discrepancies(self, session_id: str, strategy: str = "FIFO"):
@@ -276,9 +280,11 @@ class SageX3Processor:
             logger.error(f"Erreur génération fichier final: {e}")
             raise
     
-    def generate_priority_final_file(self, session_id: str):
-        """Génère le fichier final avec le nouveau processeur prioritaire"""
+    def generate_coherent_final_file(self, session_id: str):
+        """Génère le fichier final avec cohérence GARANTIE"""
         try:
+            logger.info(f"🎯 GÉNÉRATION FICHIER FINAL COHÉRENT - Session: {session_id}")
+            
             # Charger toutes les données nécessaires
             original_df = self.session_service.load_dataframe(session_id, "original_df")
             completed_df = self.session_service.load_dataframe(session_id, "completed_df")
@@ -301,30 +307,39 @@ class SageX3Processor:
             final_filename = f"{base_name}_corrige_{session_id}.csv"
             final_file_path = os.path.join(config.FINAL_FOLDER, final_filename)
 
-            # Utiliser le processeur prioritaire pour générer le fichier
-            final_path, generation_summary = self.priority_processor.generate_priority_final_file(
+            # Utiliser le processeur prioritaire strict pour générer le fichier
+            final_path, generation_summary = self.priority_processor.generate_coherent_final_file(
                 session_id, original_df, completed_df, header_lines, final_file_path
             )
 
             # Mettre à jour la session
             self.session_service.update_session(
-                session_id, final_file_path=final_path
+                session_id, 
+                final_file_path=final_path,
+                status="completed"
             )
 
-            logger.info(f"✅ Fichier final généré avec priorité LOTECART: {final_path}")
-            logger.info(f"📊 Résumé: {generation_summary}")
+            # Vérification finale du fichier généré
+            self._verify_final_file_coherence(final_path)
+            
+            logger.info(f"✅ Fichier final COHÉRENT généré avec priorité STRICTE LOTECART: {final_path}")
+            logger.info(f"📊 Résumé génération: {generation_summary}")
             
             return final_path
 
         except Exception as e:
-            logger.error(f"❌ Erreur génération fichier final prioritaire: {e}")
+            logger.error(f"❌ Erreur génération fichier final cohérent: {e}", exc_info=True)
             raise
     
-    def _verify_final_file(self, final_file_path: str):
-        """Vérifie le contenu du fichier final généré"""
+    def _verify_final_file_coherence(self, final_file_path: str):
+        """Vérifie la cohérence du fichier final généré avec focus LOTECART"""
         try:
+            logger.info(f"🔍 VÉRIFICATION COHÉRENCE FICHIER FINAL: {final_file_path}")
+            
             lotecart_count = 0
+            lotecart_coherent = 0
             total_lines = 0
+            issues = []
             
             with open(final_file_path, 'r', encoding='utf-8') as f:
                 for line_num, line in enumerate(f, 1):
@@ -338,12 +353,48 @@ class SageX3Processor:
                                 qte_theo = parts[5]
                                 qte_reelle = parts[6]
                                 indicateur = parts[7]
-                                logger.info(f"LOTECART ligne {line_num}: {article} - Théo={qte_theo}, Réel={qte_reelle}, Indicateur={indicateur}")
+                                
+                                # Vérification stricte LOTECART
+                                try:
+                                    f_val = float(qte_theo)
+                                    g_val = float(qte_reelle)
+                                    
+                                    if (indicateur == '2' and 
+                                        abs(f_val - g_val) < 0.001 and 
+                                        f_val > 0 and g_val > 0):
+                                        lotecart_coherent += 1
+                                        logger.debug(f"✅ LOTECART COHÉRENT ligne {line_num}: {article} - F={qte_theo}, G={qte_reelle}")
+                                    else:
+                                        issues.append(f"❌ LOTECART INCOHÉRENT ligne {line_num}: {article} - F={qte_theo}, G={qte_reelle}, Ind={indicateur}")
+                                        logger.error(f"❌ LOTECART INCOHÉRENT ligne {line_num}: {article} - F={qte_theo}, G={qte_reelle}, Ind={indicateur}")
+                                except ValueError:
+                                    issues.append(f"❌ QUANTITÉS NON NUMÉRIQUES ligne {line_num}: {article}")
+                                    logger.error(f"❌ QUANTITÉS NON NUMÉRIQUES ligne {line_num}: {article}")
             
-            logger.info(f"Vérification finale: {lotecart_count} lignes LOTECART sur {total_lines} lignes S")
+            # Résumé de vérification
+            coherence_percentage = (lotecart_coherent / lotecart_count * 100) if lotecart_count > 0 else 100
+            
+            logger.info(
+                f"📊 VÉRIFICATION TERMINÉE: "
+                f"{lotecart_count} lignes LOTECART sur {total_lines} lignes S - "
+                f"Cohérentes: {lotecart_coherent}/{lotecart_count} ({coherence_percentage:.1f}%)"
+            )
+            
+            if issues:
+                logger.error(f"❌ {len(issues)} problème(s) de cohérence détecté(s):")
+                for issue in issues[:5]:  # Afficher max 5 problèmes
+                    logger.error(f"   {issue}")
+                if len(issues) > 5:
+                    logger.error(f"   ... et {len(issues) - 5} autres problèmes")
+            
+            if coherence_percentage < 100:
+                raise ValueError(f"FICHIER FINAL INCOHÉRENT: {coherence_percentage:.1f}% de cohérence LOTECART")
+            
+            logger.info("✅ FICHIER FINAL PARFAITEMENT COHÉRENT")
             
         except Exception as e:
-            logger.error(f"Erreur vérification fichier final: {e}")
+            logger.error(f"❌ Erreur vérification cohérence fichier final: {e}", exc_info=True)
+            raise
 
 
 # Initialisation du processeur
@@ -501,15 +552,11 @@ def process_completed_file_route():
         filepath = os.path.join(config.PROCESSED_FOLDER, filename_on_disk)
         os.rename(temp_filepath, filepath)
 
-        # Traitement (utilise encore l'ancienne méthode pour compatibilité)
-        # NOUVEAU: Traitement avec priorisation LOTECART
-        processing_result = processor.process_completed_file(session_id, filepath)
+        # NOUVEAU: Traitement avec priorisation STRICTE LOTECART
+        processing_result = processor.process_completed_file(session_id, filepath, strategy)
         
-        # La distribution est maintenant intégrée dans process_completed_file
-        # distributed_summary_df = processor.distribute_discrepancies(session_id, strategy)
-        
-        # Génération du fichier final avec priorité
-        final_file_path = processor.generate_priority_final_file(session_id)
+        # Génération du fichier final avec cohérence garantie
+        final_file_path = processor.generate_coherent_final_file(session_id)
 
         # Mise à jour de la session en base
         session_service.update_session(
@@ -533,7 +580,9 @@ def process_completed_file_route():
                     "total_discrepancy": session_data.get("total_discrepancy", 0),
                     "adjusted_items": session_data.get("adjusted_items_count", 0),
                     "strategy_used": session_data.get("strategy_used", "N/A"),
-                    "processing_mode": "PRIORITY_LOTECART_FIRST"
+                    "processing_mode": "STRICT_PRIORITY_LOTECART_COHERENT",
+                    "lotecart_count": processing_result.get("lotecart_summary", {}).get("adjustments_created", 0),
+                    "quality_score": processing_result.get("lotecart_summary", {}).get("quality_score", 0)
                 },
             }
         )
